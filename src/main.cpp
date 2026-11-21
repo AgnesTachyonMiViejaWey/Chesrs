@@ -76,22 +76,25 @@ class $modify(BuyAllMenu, MenuLayer) {
 
         // Los mas baratos primero: asi compras la mayor cantidad posible.
         std::sort(items.begin(), items.end(), [](GJStoreItem* a, GJStoreItem* b) {
-            return a->m_price < b->m_price;
+            return a->m_price.value() < b->m_price.value();
         });
 
         // Todo en memoria, sin escribir el archivo hasta el final.
         g_blockSave = true;
         for (auto item : items) {
-            if (gsm->isStoreItemUnlocked(item->m_index)) {
+            int index = item->m_index.value();
+            if (gsm->isStoreItemUnlocked(index)) {
                 f->alreadyOwned++;
                 continue;
             }
-            if (!gsm->canAfford(item)) {
+            // La moneda (orbes o diamantes) depende de la tienda del item.
+            int have = gsm->getStat(item->getCurrencyKey().c_str());
+            if (have < item->m_price.value()) {
                 f->skippedFunds++;
                 continue;
             }
-            gsm->purchaseItem(item);
-            f->bought++;
+            if (gsm->purchaseItem(index)) f->bought++;
+            else f->skippedFunds++;
         }
 
         // Un solo guardado, despues de la espera configurada.
@@ -117,3 +120,4 @@ class $modify(BuyAllMenu, MenuLayer) {
         )->show();
     }
 };
+    
