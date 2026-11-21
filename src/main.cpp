@@ -1,108 +1,119 @@
 #include <Geode/Geode.hpp>
-#include <Geode/modify/SecretRewardsLayer.hpp>
+#include <Geode/modify/MenuLayer.hpp>
 #include <Geode/modify/AppDelegate.hpp>
 
 using namespace geode::prelude;
 
 // Mientras sea true, el juego NO escribe el archivo de guardado.
-// Los cofres se abren y gastan llaves normal (en memoria), y el guardado
-// se hace despues una sola vez, con calma.
+// Todas las compras se hacen en memoria y se guarda una sola vez al final.
 static bool g_blockSave = false;
 
 class $modify(DeferSaveDelegate, AppDelegate) {
     void trySaveGame(bool p0) {
         if (g_blockSave) {
-            log::info("Open All Chests: guardado pospuesto");
+            log::info("Buy All Shops: guardado pospuesto");
             return;
         }
         AppDelegate::trySaveGame(p0);
     }
 };
 
-static void flushSave() {
-    g_blockSave = false;
-    AppDelegate::get()->trySaveGame(false);
-    log::info("Open All Chests: guardado hecho");
-}
-
-// Recoge todos los botones de cofre del Treasure Room (sin el propio ni el de volver).
-static void collectButtons(CCNode* node, std::vector<CCMenuItemSpriteExtra*>& out) {
-    if (!node) return;
-    for (auto child : CCArrayExt<CCNode*>(node->getChildren())) {
-        if (auto btn = typeinfo_cast<CCMenuItemSpriteExtra*>(child)) {
-            if (btn->getID() == "open-all-btn") continue;
-            if (btn->getID() == "back-button") continue;
-            out.push_back(btn);
-        }
-        collectButtons(child, out);
-    }
-}
-
-class $modify(OpenAllChestsLayer, SecretRewardsLayer) {
+class $modify(BuyAllMenu, MenuLayer) {
     struct Fields {
-        float waited = 0.f;
-        bool waitingSave = false;
+        int bought = 0;
+        int skippedFunds = 0;
+        int alreadyOwned = 0;
     };
 
-    bool init(bool p0) {
-        if (!SecretRewardsLayer::init(p0)) return false;
+    bool init() {
+        if (!MenuLayer::init()) return false;
 
-        auto spr = ButtonSprite::create("Abrir todos", "goldFont.fnt", "GJ_button_01.png", .8f);
-        auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(OpenAllChestsLayer::onOpenAll));
-        btn->setID("open-all-btn");
+        auto spr = ButtonSprite::create("Comprar todo", "goldFont.fnt", "GJ_button_01.png", .7f);
+        auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(BuyAllMenu::onBuyAll));
+        btn->setID("buy-all-shops-btn");
 
         auto menu = CCMenu::create();
-        menu->setID("open-all-menu");
+        menu->setID("buy-all-shops-menu");
         menu->addChild(btn);
         auto win = CCDirector::get()->getWinSize();
-        menu->setPosition({win.width - 70.f, 25.f});
+        menu->setPosition({75.f, win.height - 25.f});
         this->addChild(menu, 100);
         return true;
     }
 
-    void onOpenAll(CCObject*) {
-        std::vector<CCMenuItemSpriteExtra*> found;
-        collectButtons(this, found);
-        log::info("Open All Chests: {} botones candidatos", found.size());
+    void onBuyAll(CCObject*) {
+        Ref<BuyAllMenu> self = this;
+        createQuickPopup(
+            "Comprar todo",
+            "Voy a comprar <cy>todo lo que te alcance</c> en todas las tiendas, "
+            "gastando orbes y diamantes. ¿Seguir?",
+            "No", "Sí",
+            [self](auto, bool yes) {
+                if (yes) self->buyEverything();
+            }
+        );
+    }
 
-        if (found.empty()) {
-            FLAlertLayer::create("Open All Chests", "No encontre cofres.", "OK")->show();
+    void buyEverything() {
+        auto f = m_fields.self();
+        f->bought = 0;
+        f->skippedFunds = 0;
+        f->alreadyOwned = 0;
+
+        auto gsm = GameStatsManager::get();
+
+        // Reunir todos los items de todas las tiendas.
+        std::vector<GJStoreItem*> items;
+        for (auto [id, item] : CCDictionaryExt<int, GJStoreItem*>(gsm->m_storeItems)) {
+            if (item) items.push_back(item);
+        }
+        log::info("Buy All Shops: {} items en total", items.size());
+
+        if (items.empty()) {
+            FLAlertLayer::create("Buy All Shops", "No encontre items de tienda.", "OK")->show();
             return;
         }
 
-        // Abrir todo de golpe, sin escribir el archivo todavia.
+        // Los mas baratos primero: asi compras la mayor cantidad posible.
+        std::sort(items.begin(), items.end(), [](GJStoreItem* a, GJStoreItem* b) {
+            return a->m_price < b->m_price;
+        });
+
+        // Todo en memoria, sin escribir el archivo hasta el final.
         g_blockSave = true;
-        for (auto b : found) {
-            if (b && b->isVisible() && b->isEnabled()) b->activate();
+        for (auto item : items) {
+            if (gsm->isStoreItemUnlocked(item->m_index)) {
+                f->alreadyOwned++;
+                continue;
+            }
+            if (!gsm->canAfford(item)) {
+                f->skippedFunds++;
+                continue;
+            }
+            gsm->purchaseItem(item);
+            f->bought++;
         }
 
-        auto f = m_fields.self();
-        f->waited = 0.f;
-        f->waitingSave = false;
-        this->schedule(schedule_selector(OpenAllChestsLayer::checkDone), 0.5f);
+        // Un solo guardado, despues de la espera configurada.
+        this->scheduleOnce(
+            schedule_selector(BuyAllMenu::finish),
+            static_cast<float>(Mod::get()->getSettingValue<double>("save-delay"))
+        );
     }
 
-    void checkDone(float dt) {
+    void finish(float) {
         auto f = m_fields.self();
-        auto scene = CCDirector::get()->getRunningScene();
+        g_blockSave = false;
+        AppDelegate::get()->trySaveGame(false);
+        log::info("Buy All Shops: guardado hecho");
 
-        // Esperar a que se cierren todos los popups de recompensa.
-        if (scene && scene->getChildByType<RewardUnlockLayer>(0)) {
-            f->waited = 0.f;
-            return;
-        }
-
-        // Pausa extra antes del unico guardado.
-        f->waited += dt;
-        if (f->waited < Mod::get()->getSettingValue<double>("save-delay")) return;
-
-        this->unschedule(schedule_selector(OpenAllChestsLayer::checkDone));
-        flushSave();
-    }
-
-    void onBack(CCObject* sender) {
-        // Si sales antes de tiempo, guarda ya para no perder nada.
-        if (g_blockSave) flushSave();
-        SecretRewardsLayer::onBack(sender);
+        FLAlertLayer::create(
+            "Buy All Shops",
+            fmt::format(
+                "Compradas: {}\nSin fondos: {}\nYa las tenias: {}",
+                f->bought, f->skippedFunds, f->alreadyOwned
+            ),
+            "OK"
+        )->show();
     }
 };
