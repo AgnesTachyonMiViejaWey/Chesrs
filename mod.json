@@ -1,0 +1,22 @@
+{
+	"geode": "6.0.0-beta.1",
+	"gd": {
+		"android32": "2.2091",
+		"android64": "2.2091",
+		"win": "2.2091"
+	},
+	"id": "aalezz.slow-chests",
+	"name": "Slow Chests",
+	"version": "v1.0.0",
+	"developer": "aalezz",
+	"description": "Abre todos los cofres del Treasure Room uno por uno, con pausa entre cada uno.",
+	"settings": {
+		"save-delay": {
+			"type": "float",
+			"name": "Espera antes de guardar (seg)",
+			"default": 3.0,
+			"min": 0.5,
+			"max": 15.0
+		}
+	}
+}
